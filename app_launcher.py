@@ -53,9 +53,49 @@ def main() -> int:
     if str(base) not in sys.path:
         sys.path.insert(0, str(base))
 
+    # 2.5) 诊断模式：设置环境变量 AUGAUG_DEBUG=1，会把 DPI/字体信息写到 exe 旁的日志，
+    #      方便排查"exe 里字体变小"这类只在打包后出现的问题。
+    if os.environ.get("AUGAUG_DEBUG"):
+        _write_debug_log(base)
+
     # 3) 启动界面
     import augment_gui
     return augment_gui.main()
+
+
+def _write_debug_log(base: Path) -> None:
+    """把 DPI 与字体信息写进 exe 旁的 debug.log（windowed 模式没有控制台）。"""
+    lines = []
+    try:
+        import ctypes
+        lines.append(f"frozen            = {getattr(sys, 'frozen', False)}")
+        lines.append(f"sys.executable    = {sys.executable}")
+        lines.append(f"base              = {base}")
+        lines.append(f"sys.base_prefix   = {sys.base_prefix}")
+        lines.append(f"cwd               = {os.getcwd()}")
+        hdc = ctypes.windll.user32.GetDC(0)
+        try:
+            dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)
+        finally:
+            ctypes.windll.user32.ReleaseDC(0, hdc)
+        lines.append(f"GetDeviceCaps DPI = {dpi}")
+        import tkinter as tk
+        from tkinter import font as tkfont
+        root = tk.Tk()
+        root.withdraw()
+        lines.append(f"tk scaling(自声明后) = {float(root.tk.call('tk', 'scaling')):.4f}")
+        lines.append(f"winfo_fpixels(1i)    = {root.winfo_fpixels('1i'):.2f}")
+        lines.append(f"screen               = {root.winfo_screenwidth()} x {root.winfo_screenheight()}")
+        f = tkfont.nametofont("TkDefaultFont")
+        lines.append(f"TkDefaultFont        = {f.actual()}")
+        lines.append(f"linespace            = {f.metrics('linespace')}")
+        root.destroy()
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"诊断失败: {type(e).__name__}: {e}")
+    try:
+        (base / "debug.log").write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

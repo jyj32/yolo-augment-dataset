@@ -44,23 +44,42 @@ EXCLUDES = [
 ]
 
 
-def _tk_dll_args() -> list[str]:
-    """收集 conda 环境里的 tcl/tk DLL。
+def _native_dll_args() -> list[str]:
+    """收集 conda 环境下 PyInstaller 漏掉的原生 DLL。
 
-    conda 版 Python 的 tkinter 依赖 Library/bin 下的 tcl86t.dll / tk86t.dll，
-    PyInstaller 只收集了 _tkinter.pyd 与 tcl/tk 数据目录，却不带这两个 DLL，
-    导致运行时报 `ImportError: DLL load failed while importing _tkinter`
-    （exe 一启动就弹 "Unhandled exception in script" 且看不到原因）。
+    踩过两个坑，都是"打包成功、运行才崩溃"：
+      1. tkinter：缺 tcl86t.dll / tk86t.dll
+         -> ImportError: DLL load failed while importing _tkinter
+      2. ctypes ：缺 ffi-*.dll（libffi）
+         -> ImportError: DLL load failed while importing _ctypes
+            后果是 ctypes 整个不可用 => 无法声明 DPI 感知 => exe 里字体变小，
+            而且这个错误是静默的（被 try/except 吞掉），极难发现。
+    这两类问题在源码运行时完全看不出来，只有 exe 才暴露。
     """
     args: list[str] = []
     base = Path(sys.base_prefix)
     lib_bin = base / "Library" / "bin"
+
+    # tkinter 的 tcl/tk 运行库
     for name in ("tcl86t.dll", "tk86t.dll"):
         p = lib_bin / name
         if p.exists():
-            # 目标目录写 "."，让 DLL 落在 exe 旁边，Windows 才能按默认顺序找到
+            # 目标写 "."，让 DLL 落在 exe 旁边，Windows 才能按默认顺序找到
             args += ["--add-binary", f"{p}{os.pathsep}."]
-    # 兜底：把 tcl/tk 数据目录也显式带上（不同 PyInstaller 版本行为不一致）
+
+    # ctypes 依赖的 libffi（不同版本文件名不同：ffi-7 / ffi-8 / ffi.dll）
+    seen: set[Path] = set()
+    for d in (base / "DLLs", lib_bin, base):
+        if not d.is_dir():
+            continue
+        for pat in ("ffi*.dll", "libffi*.dll"):
+            for p in sorted(d.glob(pat)):
+                if p in seen:
+                    continue
+                seen.add(p)
+                args += ["--add-binary", f"{p}{os.pathsep}."]
+
+    # tcl/tk 数据目录（不同 PyInstaller 版本行为不一致，显式带上更稳）
     for d in ("tcl8.6", "tk8.6"):
         src = base / "Library" / "lib" / d
         if src.is_dir():
@@ -118,7 +137,7 @@ def build(onefile: bool, console: bool, clean: bool) -> int:
     for ex in EXCLUDES:
         cmd += ["--exclude-module", ex]
     # conda 环境必须补上 tcl/tk 的 DLL，否则 _tkinter 加载失败
-    cmd += _tk_dll_args()
+    cmd += _native_dll_args()
 
     print("执行:", " ".join(cmd))
     r = subprocess.run(cmd, cwd=str(HERE))

@@ -1396,8 +1396,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         except ValueError as e:
             raise SystemExit(str(e))
         args.image_path, args.label_path = img, lbl
+        # 不用 print(file=sys.stderr)：PyInstaller 的 windowed 模式下 sys.stderr 是 None，
+        # 会抛 AttributeError。改用普通 print，交给 GUI 的日志重定向去接。
         print(f"! --src 已弃用，已自动转换为：\n"
-              f"    --image-path \"{img}\"\n    --label-path \"{lbl}\"", file=sys.stderr)
+              f"    --image-path \"{img}\"\n    --label-path \"{lbl}\"")
     missing = [f for f, v in (("--image-path", args.image_path),
                               ("--label-path", args.label_path)) if not v]
     if missing:

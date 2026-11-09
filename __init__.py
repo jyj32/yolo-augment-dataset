@@ -52,6 +52,13 @@ __all__ = [
 ]
 
 # 对外暴露最常用的几个符号，便于 `from augment_dataset import ...`
+#
+# 注意：这里同时导出 main（原名）和 augment_main（别名）。
+# 原因：本包名与内部模块同名（augment_dataset/ 与 augment_dataset.py）。
+# 在 exe（PyInstaller）或"从父目录导入包"的场景下，`import augment_dataset`
+# 拿到的是本文件而不是那个脚本模块，此时 GUI 需要 AD.main 才能工作；
+# 只导出 augment_main 会导致运行时报
+#   AttributeError: module 'augment_dataset' has no attribute 'main'
 try:  # pragma: no cover - 导入失败不应阻塞脚本式使用
     from .augment_dataset import (  # noqa: F401
         AugCfg,
@@ -59,11 +66,12 @@ try:  # pragma: no cover - 导入失败不应阻塞脚本式使用
         build_arg_parser,
         cfg_from_values,
         default_out_for,
-        main as augment_main,
         preview_image,
         resolve_source,
         source_exists,
     )
+    from .augment_dataset import main  # noqa: F401
+    from .augment_dataset import main as augment_main  # noqa: F401
 except ImportError:
     # 以脚本方式直接运行本目录下的文件时（没有包上下文），忽略即可
     pass

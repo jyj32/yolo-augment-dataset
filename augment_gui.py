@@ -33,7 +33,7 @@ import threading
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
-
+import numpy as np
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -59,11 +59,30 @@ if _MOD_PATH.exists():
     sys.modules.setdefault("_augment_dataset_impl", AD)
     _spec.loader.exec_module(AD)
 else:
-    # exe 打包后（或作为已安装包）走这里
+    # exe 打包后（或作为已安装包）走这里。
+    # 关键：`import augment_dataset` 在这里可能拿到**包**（__init__.py）而不是
+    # 那个同名脚本模块，包本身没有 main/main 等实现细节。所以先尝试从包里
+    # 取子模块 augment_dataset.augment_dataset；不行再退回顶层的同名模块。
+    AD = None
     try:
-        import augment_dataset as AD  # type: ignore[no-redef]
-    except ImportError:  # pragma: no cover
-        from . import augment_dataset as AD  # type: ignore[no-redef]
+        import importlib as _il
+        _pkg = _il.import_module("augment_dataset")
+        _sub = getattr(_pkg, "augment_dataset", None)
+        if _sub is not None and hasattr(_sub, "main"):
+            AD = _sub
+        elif hasattr(_pkg, "main"):
+            AD = _pkg
+    except ImportError:
+        pass
+    if AD is None:  # pragma: no cover
+        try:
+            import augment_dataset as AD  # type: ignore[no-redef]
+        except ImportError:
+            from . import augment_dataset as AD  # type: ignore[no-redef]
+    if not hasattr(AD, "main"):  # pragma: no cover - 明确报错，别让用户看到莫名 TypeError
+        raise ImportError(
+            "无法加载数据增强核心模块（augment_dataset）。\n"
+            "如果你是直接运行 exe，请确认 _internal 目录与 exe 在一起、未被杀毒软件隔离。")
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -118,21 +137,43 @@ def _enable_dpi_awareness() -> Optional[float]:
 def _pin_tk_scaling(root: "tk.Tk", scaling: Optional[float]) -> None:
     """把 tk scaling 固定下来，避免打开系统对话框后字体跳变。
 
-    即使 _enable_dpi_awareness 失败（返回 None），也把当前 scaling 读出来钉住，
-    这样打开/关闭文件对话框不会让它漂移。
+    scaling 为 None（_enable_dpi_awareness 失败）时，不盲目沿用当前值：
+    冻结环境里 Tk 有时会先算出偏小的 scaling（1.33 而非 2.0），
+    这时如果直接"钉住当前值"，界面就会一直是小字。
+    因此这里再按系统 DPI 兜底算一次。
     """
     target = scaling
-    if target is None:
+    if not target or target <= 0:
         try:
-            target = float(root.tk.call("tk", "scaling"))
+            current = float(root.tk.call("tk", "scaling"))
         except (tk.TclError, ValueError):
             return
-    if not target or target <= 0:
-        return
+        # 用系统 DPI 推导的权威值；拿不到就用当前值
+        derived = _scaling_from_system_dpi()
+        if derived and derived > current:
+            target = derived
+        else:
+            target = current
     try:
         root.tk.call("tk", "scaling", float(target))
     except tk.TclError:
         pass
+
+
+def _scaling_from_system_dpi() -> Optional[float]:
+    """按主显示器 DPI 算 Tk 的 scaling（Tk 以 72dpi 为 1.0）。非 Windows 返回 None。"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        hdc = ctypes.windll.user32.GetDC(0)
+        try:
+            dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88) or 96  # LOGPIXELSX
+        finally:
+            ctypes.windll.user32.ReleaseDC(0, hdc)
+        return float(dpi) / 72.0
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _reassert_scaling(root: "tk.Tk", scaling: Optional[float]) -> None:
@@ -977,13 +1018,22 @@ class AugmentApp:
         buf = io.StringIO()
 
         class _Tee(io.TextIOBase):
+            """把输出同时写到内存缓冲和原始 stdout。
+
+            注意：PyInstaller 的 --windowed 模式下 sys.stdout / sys.__stdout__ 都是 None，
+            直接写就会抛出 `'NoneType' object has no attribute 'write'`
+            （exe 里一点「开始增强」就失败）。所以这里必须过滤掉 None。
+            """
+
             def __init__(self, *streams):
-                self.streams = streams
+                self.streams = [s for s in streams if s is not None]
 
             def write(self, s):
                 for st in self.streams:
-                    st.write(s)
-                self.flush()
+                    try:
+                        st.write(s)
+                    except (ValueError, OSError):
+                        pass
                 return len(s)
 
             def flush(self):
